@@ -11,47 +11,36 @@ import java.util.Map;
 
 @Mapper
 public interface TrafficMapper {
-
-    // ==================== 🟢 新增：基于真实 Hive/DB 数据的统计接口 ====================
-
-    // 1. 获取数据库中最新的日期 (避免页面写死日期)
-    @Select("SELECT MAX(dt) FROM app_traffic_monitor")
+    @Select("SELECT MAX(dt) FROM dm_road_flow_summary")
     String getMaxDate();
 
-    // 2. 统计某天实际入库的总条数 (用于计算 ODS 缺失率)
-    @Select("SELECT COUNT(*) FROM app_traffic_monitor WHERE dt = #{date}")
+    @Select("SELECT COUNT(*) FROM dm_road_flow_summary WHERE dt = #{date}")
     Integer getDailyRecordCount(String date);
 
-    // 3. 统计全网路段总数 (用于计算理论应有数据量)
-    @Select("SELECT COUNT(DISTINCT road_name) FROM app_traffic_monitor")
+    @Select("SELECT COUNT(DISTINCT road_name) FROM dm_road_flow_summary")
     Integer getAllRoadCount();
 
-    // 4. 统计有效 GPS 数据量 (速度 > 0 的视为有效)
-    @Select("SELECT COUNT(*) FROM app_traffic_monitor WHERE dt = #{date} AND avg_speed > 0")
+    @Select("SELECT COUNT(*) FROM dm_road_flow_summary WHERE dt = #{date} AND avg_speed > 0")
     Integer getValidSpeedCount(String date);
 
-    // 5. 真实查找故障设备 (逻辑：某路段全天采集数据少于 12 条，视为设备故障)
     @Select("SELECT road_name as roadName, COUNT(*) as captureCount, road_id as deviceId " +
-            "FROM app_traffic_monitor " +
+            "FROM dm_road_flow_summary " +
             "WHERE dt = #{date} " +
             "GROUP BY road_name, road_id " +
             "HAVING captureCount < 12 " +
             "ORDER BY captureCount ASC LIMIT 20")
     List<Map<String, Object>> getFaultyDevices(String date);
 
-    // 6. 真实查询最近 7 天的质量趋势 (按日期聚合)
     @Select("SELECT dt as date, " +
             "COUNT(*) as total, " +
             "SUM(CASE WHEN avg_speed > 0 THEN 1 ELSE 0 END) as valid " +
-            "FROM app_traffic_monitor " +
+            "FROM dm_road_flow_summary " +
             "GROUP BY dt " +
             "ORDER BY dt DESC LIMIT 7")
     List<Map<String, Object>> getQualityTrend7Days();
 
-    // ==================== 原有业务接口 (保持不变) ====================
-
     @Select("SELECT road_name, ROUND(AVG(avg_speed), 1) as avg_speed " +
-            "FROM app_traffic_monitor " +
+            "FROM dm_road_flow_summary " +
             "WHERE dt = #{date} AND hr = #{hour} " +
             "AND road_name IS NOT NULL AND road_name != '' " +
             "GROUP BY road_name " +
@@ -60,7 +49,7 @@ public interface TrafficMapper {
     List<TrafficMonitor> selectRealTimeCongestion(@Param("date") String date, @Param("hour") Integer hour);
 
     @Select("SELECT t.*, r.geometry_wkt " +
-            "FROM app_traffic_monitor t " +
+            "FROM dm_road_flow_summary t " +
             "JOIN dim_road_info r ON t.road_id = r.road_id " +
             "WHERE t.dt = #{date} AND t.hr = #{hour} " +
             "AND t.real_flow > 0 " +
@@ -69,7 +58,7 @@ public interface TrafficMapper {
             "LIMIT 5000")
     List<TrafficMonitor> selectHeatMapData(@Param("date") String date, @Param("hour") Integer hour);
 
-    @Select("SELECT * FROM app_road_planning " +
+    @Select("SELECT * FROM dm_congestion_result " +
             "WHERE dt = #{date} AND max_saturation > 1.0 " +
             "AND road_name IS NOT NULL AND road_name != '' " +
             "ORDER BY max_saturation DESC LIMIT 20")
@@ -87,14 +76,14 @@ public interface TrafficMapper {
             "      ELSE '中心城区' " +
             "    END AS region_name, " +
             "    real_flow " +
-            "  FROM app_traffic_monitor " +
+            "  FROM dm_road_flow_summary " +
             "  WHERE dt = #{date} " +
             "  AND road_name IS NOT NULL AND road_name != '' " +
             ") t " +
             "GROUP BY t.region_name")
     List<Map<String, Object>> selectRegionalDistribution(@Param("date") String date);
 
-    @Select("SELECT * FROM app_traffic_monitor " +
+    @Select("SELECT * FROM dm_road_flow_summary " +
             "WHERE dt = #{date} " +
             "AND road_name LIKE CONCAT('%', #{roadName}, '%') " +
             "AND road_name IS NOT NULL AND road_name != '' " +
@@ -104,13 +93,13 @@ public interface TrafficMapper {
     @Select("SELECT COUNT(*) FROM dim_road_info")
     Integer getTotalRoadCount();
 
-    @Select("SELECT COUNT(DISTINCT road_id) FROM app_traffic_monitor WHERE dt = #{date}")
+    @Select("SELECT COUNT(DISTINCT road_id) FROM dm_road_flow_summary WHERE dt = #{date}")
     Integer getActiveRoadCount(@Param("date") String date);
 
-    @Select("SELECT COUNT(DISTINCT hr) FROM app_traffic_monitor WHERE dt = #{date}")
+    @Select("SELECT COUNT(DISTINCT hr) FROM dm_road_flow_summary WHERE dt = #{date}")
     Integer getDataHoursCount(@Param("date") String date);
 
-    @Select("SELECT COUNT(*) FROM app_traffic_monitor WHERE dt = #{date}")
+    @Select("SELECT COUNT(*) FROM dm_road_flow_summary WHERE dt = #{date}")
     Integer getTotalRecordCount(@Param("date") String date);
 
     @Select("SELECT " +
@@ -118,11 +107,21 @@ public interface TrafficMapper {
             "  SUM(t.vehicle_count) as vehicleCount, " +
             "  ROUND(AVG(t.avg_speed), 1) as avgSpeed, " +
             "  MAX(t.window_end) as windowEnd " +
-            "FROM app_realtime_road_traffic t " +
+            "FROM dm_trend_window t " +
             "LEFT JOIN dim_road_info r ON t.road_id = r.road_id " +
-            "WHERE t.window_end = (SELECT MAX(window_end) FROM app_realtime_road_traffic) " +
+            "WHERE t.window_end = (SELECT MAX(window_end) FROM dm_trend_window) " +
             "AND r.road_name IS NOT NULL " +
             "GROUP BY r.road_name " +
             "ORDER BY r.road_name ASC")
     List<RealTimeTraffic> selectLatestRealTimeTraffic();
+
+    @Select("SELECT road_name AS roadName, " +
+            "SUM(CASE WHEN hr >= 7 AND hr <= 9 THEN real_flow ELSE 0 END) AS morningFlow, " +
+            "SUM(CASE WHEN hr > 9 AND hr < 17 THEN real_flow ELSE 0 END) AS flatFlow, " +
+            "SUM(CASE WHEN hr >= 17 AND hr <= 19 THEN real_flow ELSE 0 END) AS eveningFlow " +
+            "FROM dm_road_flow_summary " +
+            "WHERE dt = #{date} AND road_name IS NOT NULL AND road_name != '' " +
+            "GROUP BY road_name " +
+            "ORDER BY (morningFlow + eveningFlow) DESC LIMIT 5")
+    List<Map<String, Object>> selectPeriodCompare(String date);
 }

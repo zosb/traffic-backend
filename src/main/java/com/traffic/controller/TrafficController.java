@@ -14,7 +14,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-// 注意：这里已经删除了 Random 的引用
 
 @RestController
 @RequestMapping("/api")
@@ -24,61 +23,91 @@ public class TrafficController {
     @Autowired
     private TrafficMapper trafficMapper;
 
-    // ==================== 1. 真实质量管控报告接口 (无模拟) ====================
+    // ==================== ⭐ 新增：统一的 AI 大模型代理接口 ====================
+    // 让前端 TrafficManager 将数据发到这里，Java再去请求 Python 5000 端口
+    @PostMapping("/monitor/ai_analyze")
+    public Map<String, Object> getAiComprehensiveAnalysis(@RequestBody Map<String, Object> payload) {
+        Map<String, Object> result = new HashMap<>();
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            String jsonInputString = mapper.writeValueAsString(payload);
+
+            // 请求你服务器上 Python 的 5000 端口
+            java.net.URL url = new java.net.URL("http://192.168.10.101:5000/api/ai/comprehensive_analysis");
+            java.net.HttpURLConnection con = (java.net.HttpURLConnection) url.openConnection();
+            con.setRequestMethod("POST");
+            con.setRequestProperty("Content-Type", "application/json; utf-8");
+            con.setDoOutput(true);
+
+            // 写入参数
+            try (java.io.OutputStream os = con.getOutputStream()) {
+                byte[] input = jsonInputString.getBytes("utf-8");
+                os.write(input, 0, input.length);
+            }
+
+            // 读取 Python AI 返回的结果
+            try (java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(con.getInputStream(), "utf-8"))) {
+                StringBuilder response = new StringBuilder();
+                String responseLine;
+                while ((responseLine = br.readLine()) != null) {
+                    response.append(responseLine.trim());
+                }
+                // 解析返回的 JSON 并直接返给前端
+                Map<String, Object> resultMap = mapper.readValue(response.toString(), Map.class);
+                result.put("status", resultMap.get("status"));
+                result.put("report", resultMap.get("report"));
+                return result;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            result.put("error", "AI 连接失败: " + e.getMessage());
+            result.put("report", "<div style='color:#F56C6C; background:#fef0f0; padding:15px; border-radius:5px; border-left:4px solid #F56C6C;'><i class='el-icon-circle-close'></i> <b>Java后端无法连接到Python AI引擎(192.168.10.101:5000)</b><br/>请确保服务器 Python 服务已启动。</div>");
+            return result;
+        }
+    }
+
+    // ==================== 1. 真实质量管控报告接口 ====================
     @GetMapping("/analysis/quality_report")
     public Map<String, Object> getQualityReport() {
         Map<String, Object> report = new HashMap<>();
 
-        // 1. 获取最新日期
         String latestDate = trafficMapper.getMaxDate();
         if (latestDate == null) latestDate = "2025-11-04";
         report.put("date", latestDate);
 
-        // 2. ODS 缺失率 (真实计算：理论值 vs 实际值)
         Integer actualCount = trafficMapper.getDailyRecordCount(latestDate);
         Integer totalRoads = trafficMapper.getAllRoadCount();
         if (totalRoads == null || totalRoads == 0) totalRoads = 1;
-
-        // 理论值 = 路段数 * 24小时
         int theoreticalCount = totalRoads * 24;
 
         double missingRate = 0.0;
         if (theoreticalCount > 0 && actualCount != null) {
             missingRate = (double) (theoreticalCount - actualCount) / theoreticalCount * 100;
         }
-        if (missingRate < 0) missingRate = 0.0; // 防止数据超发导致负数
+        if (missingRate < 0) missingRate = 0.0;
         report.put("odsValue", String.format("%.2f", missingRate));
 
-        // 3. GPS 匹配准确率 (真实计算：有效GPS数 / 总数)
         Integer validSpeedCount = trafficMapper.getValidSpeedCount(latestDate);
         double gpsAccuracy = 0.0;
         if (actualCount != null && actualCount > 0) {
             gpsAccuracy = (double) validSpeedCount / actualCount * 100;
         }
         report.put("gpsValue", String.format("%.2f", gpsAccuracy));
-
-        // 4. 故障设备 (真实查出来的少数据路段)
         report.put("faultyDevices", trafficMapper.getFaultyDevices(latestDate));
 
-        // 5. 趋势图 (真实数据库聚合)
         List<Map<String, Object>> trendList = trafficMapper.getQualityTrend7Days();
         List<String> dates = new ArrayList<>();
         List<Double> odsTrend = new ArrayList<>();
         List<Double> gpsTrend = new ArrayList<>();
 
-        // 倒序处理，保证时间轴从左到右
         for (int i = trendList.size() - 1; i >= 0; i--) {
             Map<String, Object> row = trendList.get(i);
             dates.add(row.get("date").toString());
-
             long total = Long.parseLong(row.get("total").toString());
             long valid = Long.parseLong(row.get("valid").toString());
-
-            // 计算当天的 GPS 准确率
             double g = total > 0 ? (double) valid / total * 100 : 0;
             gpsTrend.add(Double.parseDouble(String.format("%.1f", g)));
-
-            // 计算当天的 ODS 缺失率
             double o = total > 0 ? Math.max(0, (double)(theoreticalCount - total) / theoreticalCount * 100) : 100;
             odsTrend.add(Double.parseDouble(String.format("%.1f", o)));
         }
@@ -92,14 +121,12 @@ public class TrafficController {
         return report;
     }
 
-    // ==================== 2. 真实流量趋势对比接口 (移除 Random) ====================
+    // ==================== 2. 真实流量趋势对比接口 ====================
     @GetMapping("/analysis/trend_compare")
     public Map<String, Object> getTrendComparison(@RequestParam String date, @RequestParam String roadName) {
         Map<String, Object> result = new HashMap<>();
 
-        // 1. 查“今天”的数据
         List<TrafficMonitor> todayData = trafficMapper.selectRoadTrend(date, roadName);
-        // 如果今天没数据，找最新的一天作为基准
         if (todayData == null || todayData.isEmpty()) {
             String latest = trafficMapper.getMaxDate();
             if (latest != null) {
@@ -108,19 +135,15 @@ public class TrafficController {
             }
         }
 
-        // 2. 查“历史”数据 (计算7天前的日期)
         String historyDate = null;
         try {
             LocalDate d = LocalDate.parse(date);
-            historyDate = d.minusDays(7).toString(); // 往前推 7 天
+            historyDate = d.minusDays(7).toString();
         } catch (Exception e) {
-            historyDate = "2025-11-04"; // 兜底
+            historyDate = "2025-11-04";
         }
 
-        // 🟢 关键修改：真的去数据库查历史日期的数据，而不是模拟
         List<TrafficMonitor> historyData = trafficMapper.selectRoadTrend(historyDate, roadName);
-
-        // 如果 7 天前没数据，尝试 1 天前
         if (historyData == null || historyData.isEmpty()) {
             try {
                 LocalDate d = LocalDate.parse(date);
@@ -129,30 +152,20 @@ public class TrafficController {
             } catch (Exception e) {}
         }
 
-        // 3. 组装数据
         List<Integer> historyFlow = new ArrayList<>();
         List<String> hours = new ArrayList<>();
 
-        // 提取小时轴
         if (todayData != null) {
-            for (TrafficMonitor item : todayData) {
-                hours.add(item.getHr() + "点");
-            }
+            for (TrafficMonitor item : todayData) hours.add(item.getHr() + "点");
         }
 
-        // 匹配历史流量 (防止数据缺失导致的错位)
         if (historyData != null && !historyData.isEmpty()) {
             Map<Integer, Integer> historyMap = new HashMap<>();
-            for(TrafficMonitor m : historyData) {
-                historyMap.put(m.getHr(), m.getRealFlow());
-            }
+            for(TrafficMonitor m : historyData) historyMap.put(m.getHr(), m.getRealFlow());
             if (todayData != null) {
-                for (TrafficMonitor item : todayData) {
-                    historyFlow.add(historyMap.getOrDefault(item.getHr(), 0));
-                }
+                for (TrafficMonitor item : todayData) historyFlow.add(historyMap.getOrDefault(item.getHr(), 0));
             }
         } else {
-            // 如果实在查不到历史数据，给 0 (保持诚实，不瞎编)
             if (todayData != null) {
                 for (int i = 0; i < todayData.size(); i++) historyFlow.add(0);
             }
@@ -229,25 +242,77 @@ public class TrafficController {
         return q;
     }
 
+    // ⭐ 修复了原代码中 os.getOutputStream() 重复写入导致报错的Bug
     private String generateInsight(String roadName, List<TrafficMonitor> data) {
         if (data == null || data.isEmpty()) return "暂无数据进行分析";
 
-        // 1. 找到今日流量最大的时刻（峰值点），作为分析对象
         TrafficMonitor peak = data.get(0);
         for (TrafficMonitor m : data) {
             if (m.getRealFlow() > peak.getRealFlow()) peak = m;
         }
 
-        // 2. 尝试调用 Python AI 服务
         try {
-            // 构建 JSON 请求体
             String jsonInputString = String.format(
-                    "{\"roadName\": \"%s\", \"hr\": %d, \"flow\": %d, \"speed\": %.2f}",
+                    "{\"roadName\": \"%s\", \"hr\": %d, \"flow\": %d, \"speed\": %.2f, \"role\":\"analyst\"}",
                     roadName, peak.getHr(), peak.getRealFlow(), peak.getAvgSpeed()
             );
 
-            // 发送 HTTP POST 请求到 Python (端口 5000)
-            java.net.URL url = new java.net.URL("http://192.168.10.101:5000/predict");
+            // 此处兼容 DataAnalyst，指向最新的大模型接口
+            java.net.URL url = new java.net.URL("http://192.168.10.101:5000/api/ai/comprehensive_analysis");
+            java.net.HttpURLConnection con = (java.net.HttpURLConnection) url.openConnection();
+            con.setRequestMethod("POST");
+            con.setRequestProperty("Content-Type", "application/json; utf-8");
+            con.setDoOutput(true);
+
+            // 写入请求体
+            try (java.io.OutputStream os = con.getOutputStream()) {
+                byte[] input = jsonInputString.getBytes("utf-8");
+                os.write(input, 0, input.length);
+            }
+
+            // 读取返回结果 (原代码这里有复制粘贴错误，已修复)
+            try (java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(con.getInputStream(), "utf-8"))) {
+                StringBuilder response = new StringBuilder();
+                String responseLine;
+                while ((responseLine = br.readLine()) != null) {
+                    response.append(responseLine.trim());
+                }
+                ObjectMapper mapper = new ObjectMapper();
+                Map<String, Object> resultMap = mapper.readValue(response.toString(), Map.class);
+                if (resultMap.containsKey("report")) {
+                    return (String) resultMap.get("report");
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("⚠️ AI 服务调用异常: " + e.getMessage());
+        }
+        return fallbackInsight(roadName, peak);
+    }
+
+    private String fallbackInsight(String roadName, TrafficMonitor peak) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<p style='color:gray'>(AI 服务未连接，使用规则引擎分析)</p>");
+        sb.append("<p>📊 <strong>").append(roadName).append(" 简报：</strong></p>");
+        sb.append("今日峰值出现在 <strong>").append(peak.getHr()).append(":00</strong>，流量 ").append(peak.getRealFlow()).append(" pcu/h。");
+        return sb.toString();
+    }
+
+    @GetMapping("/analysis/period_compare")
+    public List<Map<String, Object>> getPeriodCompare(@RequestParam String date) {
+        return trafficMapper.selectPeriodCompare(date);
+    }
+
+    // ==================== ⭐ 面向交通规划师的大模型批处理代理 ====================
+    @PostMapping("/planning/ai_batch_analyze")
+    public Map<String, Object> getPlanningAiBatchAnalyze(@RequestBody Map<String, Object> payload) {
+        Map<String, Object> result = new HashMap<>();
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            String jsonInputString = mapper.writeValueAsString(payload);
+
+            // 请求 Python 端的批量规划分析接口
+            java.net.URL url = new java.net.URL("http://192.168.10.101:5000/api/ai/planning_batch_analysis");
             java.net.HttpURLConnection con = (java.net.HttpURLConnection) url.openConnection();
             con.setRequestMethod("POST");
             con.setRequestProperty("Content-Type", "application/json; utf-8");
@@ -258,48 +323,20 @@ public class TrafficController {
                 os.write(input, 0, input.length);
             }
 
-            // 读取 Python 返回的结果
-            try (java.io.OutputStream os = con.getOutputStream()) {
-                byte[] input = jsonInputString.getBytes("utf-8");
-                os.write(input, 0, input.length);
-            }
-
-            // 🟢 【核心修改】使用 Jackson 自动解析 JSON，再也不用担心截取错误了！
             try (java.io.BufferedReader br = new java.io.BufferedReader(
                     new java.io.InputStreamReader(con.getInputStream(), "utf-8"))) {
-
-                // 1. 先把返回的数据读成字符串
                 StringBuilder response = new StringBuilder();
                 String responseLine;
                 while ((responseLine = br.readLine()) != null) {
                     response.append(responseLine.trim());
                 }
-
-                // 2. 用 ObjectMapper 把它转成 Map 对象
-                ObjectMapper mapper = new ObjectMapper();
-                Map<String, Object> resultMap = mapper.readValue(response.toString(), Map.class);
-
-                // 3. 精准取出 report 字段
-                if (resultMap.containsKey("report")) {
-                    return (String) resultMap.get("report");
-                }
+                // 直接将 Python 生成的超级 JSON 原封不动返回给前端 Vue
+                return mapper.readValue(response.toString(), Map.class);
             }
-
         } catch (Exception e) {
-            System.out.println("⚠️ AI 服务调用异常: " + e.getMessage());
-            // 出错时继续走下面的兜底逻辑
+            e.printStackTrace();
+            result.put("error", "AI 批处理研判连接失败: " + e.getMessage());
+            return result;
         }
-
-        // --- 兜底逻辑 (旧版规则代码，保留作为备用) ---
-        return fallbackInsight(roadName, peak);
-    }
-
-    // 旧版逻辑改名为 fallbackInsight
-    private String fallbackInsight(String roadName, TrafficMonitor peak) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("<p style='color:gray'>(AI 服务未连接，使用规则引擎分析)</p>");
-        sb.append("<p>📊 <strong>").append(roadName).append(" 简报：</strong></p>");
-        sb.append("今日峰值出现在 <strong>").append(peak.getHr()).append(":00</strong>，流量 ").append(peak.getRealFlow()).append(" pcu/h。");
-        return sb.toString();
     }
 }
