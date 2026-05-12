@@ -27,8 +27,8 @@ public interface TrafficMapper {
             "FROM dm_road_flow_summary " +
             "WHERE dt = #{date} " +
             "GROUP BY road_name, road_id " +
-            "HAVING captureCount < 12 " +
-            "ORDER BY captureCount ASC LIMIT 20")
+            "HAVING captureCount <12 " +
+            "ORDER BY captureCount ASC LIMIT 50")
     List<Map<String, Object>> getFaultyDevices(String date);
 
     @Select("SELECT dt as date, " +
