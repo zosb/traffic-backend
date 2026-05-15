@@ -8,6 +8,9 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import java.util.List;
 import java.util.Map;
+import com.traffic.entity.User;
+import com.traffic.entity.DeviceWorkOrder;
+import org.apache.ibatis.annotations.Insert;
 
 @Mapper
 public interface TrafficMapper {
@@ -124,4 +127,17 @@ public interface TrafficMapper {
             "GROUP BY road_name " +
             "ORDER BY (morningFlow + eveningFlow) DESC LIMIT 5")
     List<Map<String, Object>> selectPeriodCompare(String date);
+
+    @Select("SELECT user_id as userId, username, password, real_name as realName, role_code as roleCode " +
+            "FROM sys_user WHERE username = #{username} AND password = #{password} AND role_code = #{role}")
+    User login(@Param("username") String username, @Param("password") String password, @Param("role") String role);
+
+    @Insert("INSERT INTO app_ai_report_history (report_id, target_date, road_name, trigger_role, ai_insight_text) " +
+            "VALUES (#{id}, #{date}, #{road}, #{role}, #{text})")
+    void saveAiReport(@Param("id") String id, @Param("date") String date,
+                      @Param("road") String road, @Param("role") String role, @Param("text") String text);
+
+    @Insert("INSERT INTO app_device_work_order (order_id, device_id, fault_type, status, dispatcher) " +
+            "VALUES (#{orderId}, #{deviceId}, #{faultType}, 'PENDING', 'System')")
+    void createWorkOrder(DeviceWorkOrder order);
 }

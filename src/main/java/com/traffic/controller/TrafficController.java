@@ -319,7 +319,15 @@ public class TrafficController {
                 ObjectMapper mapper = new ObjectMapper();
                 Map<String, Object> resultMap = mapper.readValue(response.toString(), Map.class);
                 if (resultMap.containsKey("report")) {
-                    return (String) resultMap.get("report");
+                    String reportText = (String) resultMap.get("report");
+                    try {
+                        String reportId = java.util.UUID.randomUUID().toString().replace("-", "");
+                        String today = java.time.LocalDate.now().toString();
+                        trafficMapper.saveAiReport(reportId, today, roadName, "analyst", reportText);
+                    } catch (Exception dbEx) {
+                        System.out.println("⚠️ 报告入库失败: " + dbEx.getMessage());
+                    }
+                    return reportText;
                 }
             }
 
@@ -375,5 +383,31 @@ public class TrafficController {
             result.put("error", "AI 批处理研判连接失败: " + e.getMessage());
             return result;
         }
+    }
+
+    @PostMapping("/login")
+    public Map<String, Object> doLogin(@RequestBody Map<String, String> body) {
+        com.traffic.entity.User user = trafficMapper.login(body.get("username"), body.get("password"), body.get("role"));
+
+        Map<String, Object> resp = new HashMap<>();
+        if (user != null) {
+            resp.put("success", true);
+            resp.put("role", user.getRoleCode());
+            resp.put("name", user.getRealName());
+        } else {
+            resp.put("success", false);
+            resp.put("msg", "账号、密码或登录身份不匹配！"); // 提示语更严谨
+        }
+        return resp;
+    }
+
+    @PostMapping("/create_work_order")
+    public Map<String, Object> createWorkOrder(@RequestBody com.traffic.entity.DeviceWorkOrder order) {
+        order.setOrderId("WO-" + System.currentTimeMillis());
+        trafficMapper.createWorkOrder(order);
+
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("success", true);
+        return resp;
     }
 }
